@@ -19,3 +19,11 @@ dsh plugin --profile <profile> add github:hualiong/dsh-session-delete
 
 ## 截图
 
+<table>
+  <tr>
+    <td><img width="571" height="387" align="center" src="https://github.com/user-attachments/assets/56a43ac4-c18d-4b16-ae43-e05004c8e081" /></td>
+    <td><img width="764" height="571" align="center" src="https://github.com/user-attachments/assets/a97b9e2f-ba8d-415c-b836-2399e636e77c" /></td>
+  </tr>
+</table>
+
+
