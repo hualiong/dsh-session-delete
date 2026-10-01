@@ -5,10 +5,10 @@
 ## 安装
 
 ```shell
-dsh plugin --profile <profile> add github:hualiong/dsh-session-delete
+dsh plugin --profile <profile> add @hualiong/dsh-session-delete
 ```
 
-或者你也可以在插件页面的“添加插件”，手动输入仓库地址来安装
+也可以直接从仓库安装：`dsh plugin --profile <profile> add github:hualiong/dsh-session-delete`，或在插件页面的“添加插件”里手动输入包名／仓库地址。
 
 ## 功能
 

@@ -5,7 +5,7 @@
 // and archive). Deleting calls the host endpoint, then applies the official
 // sessions-service removal so the sidebar list updates in place.
 window.__ModuleLoader__.load({
-  id: 'dsh-session-delete',
+  id: '@hualiong/dsh-session-delete',
   factory: (require) => {
     const React = require('react')
     const { useCallback, useState } = React

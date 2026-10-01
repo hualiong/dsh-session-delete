@@ -3,4 +3,4 @@
 # re-adds and profile patches can target it.
 - insert:
     - id: chameleon-session-delete
-      name: 'dsh-session-delete'
+      name: '@hualiong/dsh-session-delete'
