@@ -1,13 +1,16 @@
 name: publish
 
-# Publishes on a version tag, using npm trusted publishing (OIDC): no long-lived
-# NPM_TOKEN. Configure once with:
-#   npm trust github @hualiong/dsh-session-delete --file publish.yml \
-#     --repo hualiong/dsh-session-delete --allow-publish -y
+# Publishes a version tag with npm trusted publishing (OIDC): no NPM_TOKEN and no
+# 2FA prompt. Configure once on the package page:
+#   https://www.npmjs.com/package/@hualiong/dsh-session-delete
+#   → Settings → Trusted Publisher → GitHub Actions
+#     organization/user: hualiong
+#     repository:        dsh-session-delete
+#     workflow filename: publish.yml
+#     environment:       (leave empty)
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,11 +21,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
-      - name: Use the latest npm (trusted publishing needs >= 11.5.1)
+          # Deliberately no registry-url: it writes an empty
+          # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} placeholder into
+          # .npmrc, which shadows the OIDC credential this workflow relies on.
+
+      - name: Trusted publishing needs npm >= 11.5.1
         run: npm install -g npm@latest
+
+      - name: The tag must match package.json
+        run: |
+          test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+
       - name: Publish
         run: npm publish --access public --provenance
