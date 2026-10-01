@@ -1,0 +1,28 @@
+name: publish
+
+# Publishes on a version tag, using npm trusted publishing (OIDC): no long-lived
+# NPM_TOKEN. Configure once with:
+#   npm trust github @hualiong/dsh-session-delete --file publish.yml \
+#     --repo hualiong/dsh-session-delete --allow-publish -y
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Use the latest npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+      - name: Publish
+        run: npm publish --access public --provenance
