@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Delete",
+    "description": "Delete a session — log, projection cache and workspace accounting — from the session row menu."
+  }
+}
