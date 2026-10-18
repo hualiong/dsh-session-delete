@@ -194,12 +194,10 @@ window.__ModuleLoader__.load({
         const wasCurrent = (sessions.list.getSnapshot().byId[sessionId]?.retainedBy.mainView ?? 0) > 0
         await deleteSessionViaHost(sessionId)
         sessions.handleSessionRemoved(sessionId)
-        // Only deleting the current session navigates: startSession() is the
-        // same chain as the "New Session" click and clears the main selection
-        // when it cannot reuse or create a workspace session.
-        if (wasCurrent && uiWorkspace && typeof uiWorkspace.startSession === 'function') {
-          uiWorkspace.startSession()
-        }
+        // Archive ends in exactly this call: it releases the mainView reference
+        // and the persisted selection, so the Conversation falls back to no
+        // Session instead of starting a new one.
+        if (wasCurrent) uiWorkspace.clearMain()
       }
 
       ctx.effect(() => ctx.locale.register(NS, { zh: zhDict, en: enDict }))

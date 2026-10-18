@@ -1,6 +1,6 @@
 {
   "name": "@hualiong/dsh-session-delete",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Delete sessions of a DeepSeek Harness profile from the UI: session-row menu item with a confirm dialog; the host endpoint deletes the log, projection cache and workspace accounting, cascading through the whole subagent tree. Optionally exposes session_list / session_delete to agents. Works in web and the desktop client alike.",
   "type": "module",
   "license": "MIT",

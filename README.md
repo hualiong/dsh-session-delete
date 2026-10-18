@@ -17,6 +17,7 @@ dsh plugin --profile <profile> add @hualiong/dsh-session-delete
 - 删除链路：会话目录 + 投影缓存 + 工作区记账 + pin 记录（经活动 storageDomain，内存/磁盘一致）
 - **级联删除**：删除一个会话时，其全部子代理后代（任意深度）一并删除；任一后代在运行则会整体拒绝，不会留下半棵树
 - 删除后向客户端广播 `api-session/removed`，侧栏对应行立即消失
+- 删除**当前**会话后与原生归档行为一致：调用 `uiWorkspace.clearMain()` 清空主视图，界面停在空会话（选择工作区那一页），而不是自动新开一个会话
 - 可选暴露两个 agent 工具（默认开启，可在下面说的详细页里开关）：
   - `session_list`：按工作区分组浏览可见会话，可钻取到单个工作区的会话列表
   - `session_delete`：删除会话；拒绝删除调用者自己、拒绝删除运行中的会话
