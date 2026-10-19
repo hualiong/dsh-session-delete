@@ -99,30 +99,37 @@ window.__ModuleLoader__.load({
       marginTop: 8,
     }
 
-    // The label and the hint are one column, so the switch beside it centres on
-    // the pair rather than on the first line alone.
-    const toggleRowStyle = {
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 12,
+    // Mirror the official Subagent settings page row-for-row: one top-aligned
+    // line with the title left and the switch right (16px apart, 13px/1.5),
+    // the hint full-width under the line (12px/1.5 tertiary), 6px between the
+    // two, 12px vertical padding around the block. The official page builds
+    // this with a local CSS module over the shared Switch primitive, so a
+    // plugin without a build step replicates it with the same values.
+    const toggleBlockStyle = {
+      display: 'grid',
+      gap: 6,
+      padding: '12px 0',
     }
 
-    const toggleTextStyle = {
+    const toggleRowStyle = {
       display: 'flex',
-      flexDirection: 'column',
-      gap: 2,
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      gap: 16,
+      color: 'var(--dsw-alias-label-primary)',
+      fontSize: 13,
+      lineHeight: 1.5,
     }
 
     const toggleLabelStyle = {
-      fontSize: 13,
-      lineHeight: '20px',
+      flex: 1,
+      minWidth: 0,
     }
 
     const toggleDescStyle = {
-      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+      color: 'var(--dsw-alias-label-tertiary)',
       fontSize: 12,
-      lineHeight: '16px',
+      lineHeight: 1.5,
       margin: 0,
     }
 
@@ -159,21 +166,21 @@ window.__ModuleLoader__.load({
       if (view === 'summary') return null
       const enabled = snapshot?.value?.exposeAgentTools !== false
       const ready = snapshot?.status === 'ready' && snapshot?.writable === true
-      return React.createElement('div', { style: toggleRowStyle }, [
-        React.createElement('div', { key: 'text', style: toggleTextStyle }, [
+      return React.createElement('div', { style: toggleBlockStyle }, [
+        React.createElement('div', { key: 'row', style: toggleRowStyle }, [
           React.createElement('span', { key: 'label', style: toggleLabelStyle }, t('config.toggleTitle')),
-          React.createElement('p', { key: 'hint', style: toggleDescStyle }, t('config.toggleDesc')),
+          React.createElement(Switch, {
+            key: 'switch',
+            checked: enabled,
+            disabled: !ready,
+            label: t('config.toggleTitle'),
+            onChange: (next) => {
+              form.mutate([{ op: 'set', path: ['exposeAgentTools'], value: next }], snapshot.revision)
+                .catch(() => { /* a refused write just leaves the switch where it was */ })
+            },
+          }),
         ]),
-        React.createElement(Switch, {
-          key: 'switch',
-          checked: enabled,
-          disabled: !ready,
-          label: t('config.toggleTitle'),
-          onChange: (next) => {
-            form.mutate([{ op: 'set', path: ['exposeAgentTools'], value: next }], snapshot.revision)
-              .catch(() => { /* a refused write just leaves the switch where it was */ })
-          },
-        }),
+        React.createElement('p', { key: 'hint', style: toggleDescStyle }, t('config.toggleDesc')),
       ])
     }
 
