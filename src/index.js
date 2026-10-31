@@ -446,9 +446,19 @@ async function executeSessionList(ctx, args, exec) {
 // `exposeAgentTools: false` keeps the two tools unregistered while the client
 // button route stays available.
 
-function apply(ctx, config) {
-  const exposeAgentTools = config?.exposeAgentTools !== false
+// `exposeAgentTools` is declared `volatile`, so the plugin receives the Loader's
+// `Volatile<boolean>` reference — not the boolean written in the patch. Reading
+// it with `!== false` therefore compared an object with `false` and always
+// registered the tools. Read through `.get()` instead, and re-sync on
+// `loader/volatile-update` (emitted to this fiber when a volatile-only change
+// commits without a remount) so the settings switch works without a restart.
+function exposesAgentTools(config) {
+  const reference = config?.exposeAgentTools
+  const value = typeof reference?.get === 'function' ? reference.get() : reference
+  return value !== false
+}
 
+function apply(ctx, config) {
   function registerHttp(host, targetCtx) {
     targetCtx.effect(() => host.register({
       kind: 'exact',
@@ -484,9 +494,29 @@ function apply(ctx, config) {
 
   ctx.inject(['webServer'], (sub) => registerHttp(sub.webServer, sub))
 
-  if (exposeAgentTools) {
-    ctx.inject(['tools'], (sub) => registerTools(sub, sub.tools))
+  // The switch gates only the agent tools; both services stay optional.
+  let tools = null
+  let disposeTools = null
+  const syncTools = () => {
+    const wanted = exposesAgentTools(config)
+    if (wanted && disposeTools === null && tools !== null) {
+      disposeTools = registerTools(ctx, tools)
+    } else if (!wanted && disposeTools !== null) {
+      disposeTools()
+      disposeTools = null
+    }
   }
+
+  ctx.inject(['tools'], (sub) => {
+    tools = sub.tools
+    syncTools()
+  })
+
+  // `exposeAgentTools` is the only volatile field of this plugin, so every
+  // volatile-only commit concerns it. The loader hands the owning fiber an
+  // array of changed paths (`[['exposeAgentTools']]`), which it does not need
+  // to inspect here.
+  ctx.on('loader/volatile-update', () => syncTools())
 }
 
 function registerTools(ctx, tools) {
@@ -518,7 +548,18 @@ function registerTools(ctx, tools) {
     },
   ]
 
-  for (const spec of specs) ctx.effect(() => tools.register(defineTool(spec)))
+  // Each registration is itself a disposable; return one idempotent aggregator
+  // so the settings switch can take the tools away without remounting the
+  // plugin, while unloading the plugin still unregisters them.
+  const disposables = specs.map((spec) => tools.register(defineTool(spec)))
+  let live = true
+  const dispose = () => {
+    if (!live) return
+    live = false
+    for (const disposable of disposables) disposable()
+  }
+  ctx.effect(() => dispose)
+  return dispose
 }
 
 export { Config, apply, inject, name }
