@@ -14,6 +14,9 @@
 // Deletion steps, kept consistent with the live storage services so in-memory
 // state and on-disk units stay in sync (no "resurrected" session after the
 // next periodic flush):
+//   0. stop whatever the session owns through the official
+//      `workspace/session-stop` event (running turn, jobs, schedules,
+//      subagents) — a plain detach would let that work keep writing;
 //   1. flush a live session so dispose-time teardown has no pending writes;
 //   2. detach the live session from the store (its dispose emits
 //      session/disposed, which the official controller relays to the client);
@@ -47,6 +50,7 @@ const Config = z.object({
   ),
 })
 
+// Only used to guess the other spelling of a UUID-shaped id.
 const SESSION_ID_RE = /^(session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 class DeleteError extends Error {
@@ -54,6 +58,16 @@ class DeleteError extends Error {
     super(message)
     this.status = status
   }
+}
+
+// Session ids are opaque strings (`session-<uuid>`, `session-schedule-<hash>`,
+// `<plugin>-session-<uuid>`, ...), not one fixed format. The delete path only
+// needs an id to be one safe path segment, because every id is joined onto the
+// sessions root — including ids read from other sessions' `parentSession`.
+const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/
+
+function assertDeletableId(id) {
+  if (!SAFE_ID_RE.test(id)) throw new DeleteError(`invalid session id: ${id}`, 400)
 }
 
 // Session ids appear in two spellings across stores: the raw id (`<uuid>`)
@@ -137,16 +151,22 @@ async function stripWorkspaceAccounting(ctx, sessionId) {
   try {
     for (const workspace of registry.list()) {
       if (!workspace.sessionIds.includes(sessionId)) continue
-      await workspace.detachSession(sessionId)
-      removed = true
+      try {
+        await workspace.detachSession(sessionId)
+        removed = true
+      } catch { /* one stale record must not block the other units */ }
     }
     if (registry.archivedSessionIds.includes(sessionId)) {
-      await registry.unarchiveSession(sessionId)
-      removed = true
+      try {
+        await registry.unarchiveSession(sessionId)
+        removed = true
+      } catch { /* see above */ }
     }
     if (registry.pinnedSessionIds?.includes(sessionId)) {
-      await registry.unpinSession(sessionId)
-      removed = true
+      try {
+        await registry.unpinSession(sessionId)
+        removed = true
+      } catch { /* see above */ }
     }
   } catch { /* registry not open yet: nothing durable to clean */ }
   return removed
@@ -178,6 +198,16 @@ async function retireLiveSession(ctx, sessionId) {
   return detached
 }
 
+// Stop everything the session still owns before its record disappears: the
+// running turn, owned background jobs, active schedules and running subagents.
+// This is the same event the official archive path dispatches; a composition
+// without providers, or a refusing provider, must not block the deletion.
+async function stopSessionWork(ctx, sessionId) {
+  try {
+    await ctx.parallel('workspace/session-stop', { sessionId })
+  } catch { /* stopping is best effort; deletion still proceeds */ }
+}
+
 // Persistent subagent sessions hang off their parent via the log header's
 // parentSession link; deleting a parent without them strands them as sidebar
 // rows pointing at a dead parent forever. Resolve the transitive relationship
@@ -194,7 +224,9 @@ async function descendantSessionIds(ctx, sessionId) {
   const byParent = new Map()
   for (const r of records) {
     const parent = r.header.parentSession
-    if (!parent) continue
+    // `parentSession` is a lineage field shared with forks; only an origin
+    // marked `subagent` is a child whose log this deletion owns.
+    if (!parent || r.header.origin !== 'subagent') continue
     const key = normId(parent)
     const kids = byParent.get(key) ?? []
     kids.push(r.header.id)
@@ -234,34 +266,52 @@ function announceRemoval(ctx, sessionId) {
 // agent delete resolves the tree up front (it has to, for the busy guard) and
 // hands the very same list in, so the guard and the deletion cannot disagree.
 async function deleteSessionCore(ctx, sessionId, victims) {
-  if (!SESSION_ID_RE.test(sessionId)) {
-    throw new DeleteError(`invalid session id: ${sessionId}`, 400)
-  }
+  assertDeletableId(sessionId)
   if (victims === undefined) victims = [...(await descendantSessionIds(ctx, sessionId)), sessionId]
+  // Every victim reaches the filesystem, including ids read from another
+  // session's header: validate all of them before deleting anything.
+  victims = [...new Set(victims)]
+  for (const id of victims) assertDeletableId(id)
   const removed = []
   let detached = 0
   let dirRemoved = 0
   let projRemoved = 0
   let workspaceRemoved = 0
-  for (const id of victims) {
-    if (await retireLiveSession(ctx, id)) detached++
+  const announceRemoved = () => {
+    for (const id of removed) announceRemoval(ctx, id)
+  }
+  try {
+    for (const id of victims) {
+      await stopSessionWork(ctx, id)
+      if (await retireLiveSession(ctx, id)) detached++
 
-    // Remove the on-disk log first; if the filesystem refuses, fail before
-    // touching accounting so a half-deleted session cannot fall out of its
-    // group into "Ungrouped".
-    const { removed: dirsGone, remaining } = removeSessionDirs(id)
-    if (remaining.length > 0) {
-      throw new DeleteError(`session files could not be fully removed: ${remaining.join(', ')}`, 500)
+      // Remove the on-disk log first; if the filesystem refuses, fail before
+      // touching accounting so a half-deleted session cannot fall out of its
+      // group into "Ungrouped".
+      const { removed: dirsGone, remaining } = removeSessionDirs(id)
+      if (remaining.length > 0) {
+        throw new DeleteError(`session files could not be fully removed: ${remaining.join(', ')}`, 500)
+      }
+
+      // Per-victim results only: carrying one victim's success into the next
+      // would report (and announce) a parent that removed nothing as deleted.
+      const projGone = await stripProjCache(ctx, id)
+      const workspaceGone = await stripWorkspaceAccounting(ctx, id)
+      if (dirsGone) dirRemoved++
+      if (projGone) projRemoved++
+      if (workspaceGone) workspaceRemoved++
+      if (dirsGone || projGone || workspaceGone) removed.push(id)
     }
-
-    // Per-victim results only: carrying one victim's success into the next
-    // would report (and announce) a parent that removed nothing as deleted.
-    const projGone = await stripProjCache(ctx, id)
-    const workspaceGone = await stripWorkspaceAccounting(ctx, id)
-    if (dirsGone) dirRemoved++
-    if (projGone) projRemoved++
-    if (workspaceGone) workspaceRemoved++
-    if (dirsGone || projGone || workspaceGone) removed.push(id)
+  } catch (e) {
+    // A failed cascade has already deleted earlier victims: tell clients what
+    // is really gone, and name those ids in the error instead of pretending
+    // nothing happened.
+    announceRemoved()
+    if (removed.length === 0) throw e
+    const status = e instanceof DeleteError && e.status ? e.status : 500
+    const wrapped = new DeleteError(`${e.message}; already removed: ${removed.join(', ')}`, status)
+    wrapped.removed = removed
+    throw wrapped
   }
   if (removed.length === 0) {
     throw new DeleteError(`session not found: ${sessionId}`, 404)
@@ -269,7 +319,7 @@ async function deleteSessionCore(ctx, sessionId, victims) {
   // Announced here rather than at each call site: every caller (button route,
   // agent tool) owes connected clients the row drop, and only what was really
   // removed is announced.
-  for (const id of removed) announceRemoval(ctx, id)
+  announceRemoved()
   return {
     removed,
     detached,
@@ -281,6 +331,8 @@ async function deleteSessionCore(ctx, sessionId, victims) {
 
 // --- http helpers -------------------------------------------------------------
 
+const MAX_BODY_BYTES = 1 << 20
+
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj)
   res.writeHead(status, {
@@ -290,16 +342,57 @@ function sendJson(res, status, obj) {
   res.end(body)
 }
 
+// This route sits outside the Remote authorization layer, so it gates itself:
+// an `application/json` content type makes cross-site callers pay a CORS
+// preflight (which this route never answers), and a mismatched Origin is
+// refused outright. A request without Origin is a non-browser client.
+// shortcut: only cross-site callers are stopped; a non-owner client that loads
+// this same page still reaches the route, upgrade by moving it behind a Remote.
+function isJsonRequest(req) {
+  return String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')
+}
+
+function isSameOrigin(req) {
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  try {
+    const url = new URL(origin)
+    // A non-http(s) origin is an app shell (desktop webview), not a web page
+    // that a browser could point at this route from another site.
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return true
+    return url.host === req.headers.host
+  } catch {
+    return true // opaque origin (file://, webview): the content-type rule still applies
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = ''
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
     req.on('data', (chunk) => {
+      if (settled) return
       data += chunk
-      if (data.length > 1e6) req.destroy()
+      if (data.length > MAX_BODY_BYTES) {
+        // Reject instead of only destroying the request: the handler owes the
+        // caller a 413, and a hung promise would never answer at all.
+        fail(Object.assign(new Error('body too large'), { code: 'BODY_TOO_LARGE' }))
+        req.destroy()
+      }
     })
-    req.on('end', () => resolve(data))
-    req.on('error', reject)
-    req.on('aborted', () => reject(new Error('aborted')))
+    req.on('end', () => {
+      if (settled) return
+      settled = true
+      resolve(data)
+    })
+    req.on('error', (error) => fail(error))
+    req.on('aborted', () => fail(Object.assign(new Error('aborted'), { code: 'BODY_ABORTED' })))
+    req.on('close', () => fail(Object.assign(new Error('request closed before body end'), { code: 'BODY_ABORTED' })))
   })
 }
 
@@ -419,9 +512,11 @@ async function executeSessionList(ctx, args, exec) {
       title = w.title
       header = `  ${w.path}`
     }
-    if (picked.length > MAX_LISTED_SESSIONS) picked = picked.slice(0, MAX_LISTED_SESSIONS)
+    const total = picked.length
+    if (total > MAX_LISTED_SESSIONS) picked = picked.slice(0, MAX_LISTED_SESSIONS)
     const titles = await readSessionTitles(sq, picked.map((r) => r.header.id), exec.signal)
-    const lines = [`# ${title}${header}  (${picked.length})`]
+    const count = total > picked.length ? `first ${picked.length} of ${total}` : String(picked.length)
+    const lines = [`# ${title}${header}  (${count})`]
     for (const r of picked) lines.push(sessionLine(r, titles))
     return lines.join('')
   }
@@ -468,11 +563,19 @@ function apply(ctx, config) {
           sendJson(res, 405, { error: 'method not allowed' })
           return
         }
+        if (!isJsonRequest(req) || !isSameOrigin(req)) {
+          sendJson(res, 403, { error: 'forbidden' })
+          return
+        }
         let args = {}
         try {
           const body = await readBody(req)
           if (body) args = JSON.parse(body)
-        } catch {
+        } catch (e) {
+          if (e?.code === 'BODY_TOO_LARGE') {
+            sendJson(res, 413, { error: 'body too large' })
+            return
+          }
           sendJson(res, 400, { error: 'bad json body' })
           return
         }
@@ -486,7 +589,10 @@ function apply(ctx, config) {
           sendJson(res, 200, { ok: true, ...result })
         } catch (e) {
           const status = e instanceof DeleteError && e.status ? e.status : 500
-          sendJson(res, status, { error: e.message })
+          sendJson(res, status, {
+            error: e.message,
+            ...(Array.isArray(e.removed) && e.removed.length > 0 ? { removed: e.removed } : {}),
+          })
         }
       },
     }))
@@ -562,4 +668,6 @@ function registerTools(ctx, tools) {
   return dispose
 }
 
-export { Config, apply, inject, name }
+// The deletion engine is exported for the test suite; the plugin entry stays
+// `Config` + `apply`.
+export { Config, apply, inject, name, DeleteError, deleteSessionCore, descendantSessionIds, sessionIdVariants, normId }
