@@ -230,6 +230,8 @@ window.__ModuleLoader__.load({
         inject: dialogInjected,
       }, DeleteSessionDialog))
 
+      ctx.effect(() => installMenuOrdering(document))
+
       // The row page exists only while a `plugins.row.config` entry names the
       // row, so it is registered up front rather than behind an inventory read.
       for (const key of ROW_CONFIG_KEYS) {
@@ -239,6 +241,49 @@ window.__ModuleLoader__.load({
           locale: NS,
         }, ToggleAgentToolsForm))
       }
+    }
+
+    // --- menu placement ------------------------------------------------------------
+
+    // The platform renders legacy `sidebar.workspaces.session.menu.item` rows
+    // BEFORE the built-in Archive action, and Archive itself lives in the menu
+    // footer, so a destructive row registered here lands above it. Nothing in
+    // the slot contract can move a row past the footer, so after the menu opens
+    // we relocate our own row below Archive. Every step is fail-soft: when the
+    // anchors are missing we simply leave the row where the platform put it.
+    const DELETE_LABELS = new Set(['删除会话', 'Delete session'])
+    const ARCHIVE_LABELS = new Set(['归档会话', '取消归档会话', 'Archive session', 'Unarchive session'])
+
+    /** Trimmed text of one menu row, or '' for anything without text. */
+    function rowText(node) {
+      return typeof node?.textContent === 'string' ? node.textContent.trim() : ''
+    }
+
+    /** One pass over every open menu: put the delete row right after Archive. */
+    function moveDeleteBelowArchive(document) {
+      let moved = false
+      for (const menu of document.querySelectorAll('[role="menu"]')) {
+        const items = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+        const deleteRow = items.find((node) => DELETE_LABELS.has(rowText(node)))
+        const archiveRow = items.find((node) => ARCHIVE_LABELS.has(rowText(node)))
+        if (deleteRow === undefined || archiveRow === undefined) continue
+        const parent = archiveRow.parentElement
+        if (parent === null || parent !== deleteRow.parentElement) continue
+        if (deleteRow.previousElementSibling === archiveRow) continue
+        parent.insertBefore(deleteRow, archiveRow.nextSibling)
+        moved = true
+      }
+      return moved
+    }
+
+    /** Watch menu mounts; returns the disposer. */
+    function installMenuOrdering(document) {
+      if (document.body === null) return () => {}
+      const observer = new MutationObserver(() => {
+        moveDeleteBelowArchive(document)
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+      return () => observer.disconnect()
     }
 
     // --- menu item -----------------------------------------------------------------
